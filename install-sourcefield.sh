@@ -20,6 +20,12 @@ URL_REGEX='^(https://).*$'
 FETCHED="fetched"
 GENERATED="generated"
 INVALID_RESPONSE_LINE_START="🛑 Invalid response"
+SPACE=" "
+COMMA=","
+
+GITHUB_CLOUD="GitHub Cloud"
+GITHUB_ENTERPRISE="GitHub Enterprise"
+ANOTHER_PROVIDER="Another Provider"
 
 NON_URL_REGEX='^(?!https://).*$'
 
@@ -32,6 +38,9 @@ HELM_CHART_NAME="sourcefield"
 SUBDOMAIN_API="sourcefield-api"
 SUBDOMAIN_UI="sourcefield"
 
+SUPPORT_DETAILS="on Slack at https://sourcefieldplayground.slack.com/app_redirect?channel=C046G6B2N6P"
+
+git_provider=""
 github_url="https://github.com"
 github_api_url="https://api.github.com"
 create_ingresses="${FALSE}"
@@ -192,11 +201,15 @@ function get_github_details() {
     return
   fi
 
-  echo >&2 "▶ Are you using GitHub Cloud (github.com) or GitHub Enterprise (custom domain)?"
-  options=(${YES} ${NO})
+  echo >&2 "▶ Are you using ${GITHUB_CLOUD} (github.com), ${GITHUB_ENTERPRISE} (custom domain), or ${ANOTHER_PROVIDER}?"
+
+  IFS="${COMMA}"
+  options=(${GITHUB_CLOUD}${IFS}${GITHUB_ENTERPRISE}${IFS}${ANOTHER_PROVIDER})
   select_option "${options[@]}"
   choice=$?
-  if [[ "${options[$choice]}" == "${YES}" ]]; then
+  git_provider="${options[$choice]}"
+  IFS="${SPACE}"
+  if [[ "${git_provider}" == "${GITHUB_CLOUD}" ]] || [[ "${git_provider}" == "${ANOTHER_PROVIDER}" ]]; then
     return
   fi
 
@@ -204,8 +217,13 @@ function get_github_details() {
   github_api_url=$(text_prompt "GitHub API URL" "${GITHUB_API_URL}" "${URL_REGEX}" | tr '[:upper:]' '[:lower:]')
 }
 
+function get_main_domain_to_create_subdomains_under() {
+  local pronoun=${1}
+  echo $(text_prompt "▶ Main domain (${pronoun} will create ${SUBDOMAIN_UI}.* and ${SUBDOMAIN_API}.* under this domain; do not include https:// or trailing slashes/periods)" "${main_domain_to_create_subdomains_under}" | tr '[:upper:]' '[:lower:]')
+}
+
 function handle_disabled_ingress() {
-  main_domain_to_create_subdomains_under=$(text_prompt "▶ Main domain (YOU will create ${SUBDOMAIN_UI}.* and ${SUBDOMAIN_API}.* under this domain; do not include https:// or trailing slashes/periods)" "${main_domain_to_create_subdomains_under}" | tr '[:upper:]' '[:lower:]')
+  main_domain_to_create_subdomains_under=$(get_main_domain_to_create_subdomains_under "**YOU**")
   dns_needs_creation_api=$(printf '┃%-53s┃' "     a) ${SUBDOMAIN_API}.${main_domain_to_create_subdomains_under}")
   dns_needs_creation_ui=$(printf '┃%-53s┃' "     b) ${SUBDOMAIN_UI}.${main_domain_to_create_subdomains_under}")
   post_installation_instructions_ingress="${ingress_disabled_warning_block}"
@@ -226,24 +244,22 @@ function create_ingress_or_skip() {
   fi
   if [[ "${CREATE_INGRESSES}" == "${FALSE}" ]]; then
     handle_disabled_ingress
-    # main_domain_to_create_subdomains_under=$(text_prompt "▶ Main domain (YOU will create ${SUBDOMAIN_UI}.* and ${SUBDOMAIN_API}.* under this domain; do not include https:// or trailing slashes/periods)" "${main_domain_to_create_subdomains_under}" | tr '[:upper:]' '[:lower:]')
-    # post_installation_instructions_ingress="${ingress_disabled_warning_block}"
     return
   fi
 
   echo >&2 "▶ Do you want to create Ingresses using K8s and include in the Helm Chart?  (if no, you will have to do so manually!)"
-  options=(${YES} ${NO})
+  IFS="${COMMA}"
+  options=(${YES}${IFS}${NO})
   select_option "${options[@]}"
   choice=$?
+  IFS="${SPACE}"
   if [[ "${options[$choice]}" == "${NO}" ]]; then
     handle_disabled_ingress
-    # main_domain_to_create_subdomains_under=$(text_prompt "▶ Main domain (YOU will create ${SUBDOMAIN_UI}.* and ${SUBDOMAIN_API}.* under this domain; do not include https:// or trailing slashes/periods)" "${main_domain_to_create_subdomains_under}" | tr '[:upper:]' '[:lower:]')
-    # post_installation_instructions_ingress="${ingress_disabled_warning_block}"
     return
   fi
 
   create_ingresses="${TRUE}"
-  main_domain_to_create_subdomains_under=$(text_prompt "▶ Main domain (we will create ${SUBDOMAIN_UI}.* and ${SUBDOMAIN_API}.* under this domain; do not include https:// or trailing slashes/periods)" "${main_domain_to_create_subdomains_under}" | tr '[:upper:]' '[:lower:]')
+  main_domain_to_create_subdomains_under=$(get_main_domain_to_create_subdomains_under "we")
   post_installation_instructions_ingress="${ingress_enabled_warning_block}"
   ingress_annotations_default_value="${ingress_annotations_placeholders}"
 }
@@ -307,6 +323,15 @@ installation_name=$(text_prompt_simple_value_with_default "▶ Helm Chart's inst
 temp_license_key=$(get_value_from_helm_chart_by_json_path_or_default ".global.env.SOURCEFIELD_LICENSE_KEY" ${SOURCEFIELD_LICENSE_KEY})
 sourcefield_license_key=$(text_prompt "▶ Enter your SourceField License Key" ${temp_license_key} "^\s*$" "${YES}" "${YES}")
 get_github_details
+echo "${git_provider}"
+if [[ "${git_provider}" == "${ANOTHER_PROVIDER}" ]]; then
+  cat <<EOM
+🛑 The only code storage platforms that are currently supported are GitHub Cloud or GitHub Enterprise 🛑
+
+  ➤ Please reach out to us ${SUPPORT_DETAILS} for more information
+EOM
+  exit 1
+fi
 create_ingress_or_skip
 
 reset
