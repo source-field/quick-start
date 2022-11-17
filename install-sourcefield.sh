@@ -2,6 +2,7 @@
 # FILES_OUTPUT_DIRECTORY=""
 # INSTALLATION_KUBERNETES_NAMESPACE=""
 # INSTALLATION_NAME=""
+# CHART_VERSION=""
 # SOURCEFIELD_LICENSE_KEY=""
 # GITHUB_URL=""
 # GITHUB_API_URL=""
@@ -9,7 +10,6 @@
 # MAIN_DOMAIN_TO_CREATE_SUBDOMAINS_UNDER=""
 # DJANGO_SECRET_KEY=""
 # FIELD_ENCRYPTION_KEY=""
-
 
 # Don't modify anything below here...
 YES="yes"
@@ -19,11 +19,18 @@ FALSE="false"
 URL_REGEX='^(https://).*$'
 FETCHED="fetched"
 GENERATED="generated"
+INVALID_RESPONSE_LINE_START="🛑 Invalid response"
 
 NON_URL_REGEX='^(?!https://).*$'
 
 DEFAULT_INSTALLATION_NAME="sourcefield"
 DEFAULT_NAMESPACE="sourcefield"
+HELM_REPO_ADD_LOCAL_NAME="source-field"
+HELM_REPO_URL="https://harbor.sourcefield.io/chartrepo/sourcefield-public"
+HELM_CHART_NAME="sourcefield"
+
+SUBDOMAIN_API="sourcefield-api"
+SUBDOMAIN_UI="sourcefield"
 
 github_url="https://github.com"
 github_api_url="https://api.github.com"
@@ -31,6 +38,36 @@ create_ingresses="${FALSE}"
 main_domain_to_create_subdomains_under=""
 django_secret_key_fetched_or_generated="${GENERATED}"
 field_encryption_key_fetched_or_generated="${GENERATED}"
+
+ingress_annotations_empty="{}"
+read -d '' ingress_annotations_placeholders <<EOM
+# The following section needs to filled out!
+      # kubernetes.io/ingress.class: nginx
+      # cert-manager.io/cluster-issuer: letsencrypt-prod
+      # kubernetes.io/tls-acme: "true"
+EOM
+ingress_annotations_default_value="${ingress_annotations_empty}"
+
+post_installation_instructions_ingress=""
+ingress_configuration_line_item=""
+
+manual_ingress_configuration_line_item="☐ Manual configuration of ingresses (see below)"
+
+read -d '' post_installation_instructions_environment_variables <<EOM
+┃   1) Verify or uncomment the following values:      ┃
+┃     a) DJANGO_SECRET_KEY                            ┃
+┃     b) FIELD_ENCRYPTION_KEY                         ┃
+EOM
+
+read -d '' ingress_enabled_warning_block <<EOM
+┃   2) Complete setup for ingress                     ┃
+┃     a) Fill-out/uncomment the proper annotations    ┃
+┃       ► e.g. # kubernetes.io/ingress.class: nginx   ┃
+EOM
+
+read -d '' ingress_disabled_warning_block <<EOM
+┃   2) Complete setup for ingress externally          ┃
+EOM
 
 # Renders a text based list of options that can be selected by the
 # user using up, down and enter keys and returns the chosen option.
@@ -97,26 +134,39 @@ function select_option {
 }
 
 function text_prompt() {
-  local prompt=${1} possible_value=${2} regex_match=${3}
+  local prompt=${1} possible_value=${2} regex_match=${3} antipattern=${4} require_not_null=${5}
   if [[ "${2}" != "" ]]; then
+    echo >&2 "${prompt}:  ${possible_value} (already provided/exists)"
     echo "${possible_value}"
     return
   fi
-  # echo >&2 "${prompt}"
-  read -p "${prompt}:  "
+  read -p "${prompt}:  " value
 
   if [[ "${regex_match}" == "" ]]; then
     echo "${value}"
     return
   fi
 
-  if [[ "$value" =~ $regex_match ]]; then
-    echo "${value}"
-    return
+  if [[ "${antipattern}" != "${YES}" ]]; then
+    if [[ "$value" =~ $regex_match ]]; then
+      echo "${value}"
+      return
+    fi
+  else
+    if [[ "$require_not_null" == "${YES}" ]] && [[ -z "$value" ]]; then
+      echo >&2 "${INVALID_RESPONSE_LINE_START} - this variable cannot be empty"
+      echo >&2
+      text_prompt "${prompt}" "${possible_value}" "${regex_match}" "${antipattern}" "${require_not_null}"
+      return
+    fi
+    if [[ ! "$value" =~ $regex_match ]]; then
+      echo "${value}"
+      return
+    fi
   fi
+  echo >&2 "${INVALID_RESPONSE_LINE_START} - does not match the following pattern: ${regex_match}"
   echo >&2
-  echo >&2 "Invalid response - does not match the following pattern: ${regex_match}"
-  text_prompt "${prompt}" "${possible_value}" "${regex_match}"
+  text_prompt "${prompt}" "${possible_value}" "${regex_match}" "${antipattern}" "${require_not_null}"
 }
 
 function text_prompt_simple_value_with_default() {
@@ -125,8 +175,7 @@ function text_prompt_simple_value_with_default() {
     echo "${possible_value}"
     return
   fi
-  # echo >&2 "${prompt}  (default: ${default_value})"
-  read -p "${prompt}  (default: ${default_value}):  "
+  read -p "${prompt}  (default: ${default_value}):  " value
 
   if [[ "${value}" != "" ]]; then
     echo "${value}"
@@ -143,7 +192,7 @@ function get_github_details() {
     return
   fi
 
-  echo >&2 "Are you using GitHub Cloud (github.com) or GitHub Enterprise (custom domain)?"
+  echo >&2 "▶ Are you using GitHub Cloud (github.com) or GitHub Enterprise (custom domain)?"
   options=(${YES} ${NO})
   select_option "${options[@]}"
   choice=$?
@@ -155,40 +204,63 @@ function get_github_details() {
   github_api_url=$(text_prompt "GitHub API URL" "${GITHUB_API_URL}" "${URL_REGEX}" | tr '[:upper:]' '[:lower:]')
 }
 
+function handle_disabled_ingress() {
+  main_domain_to_create_subdomains_under=$(text_prompt "▶ Main domain (YOU will create ${SUBDOMAIN_UI}.* and ${SUBDOMAIN_API}.* under this domain; do not include https:// or trailing slashes/periods)" "${main_domain_to_create_subdomains_under}" | tr '[:upper:]' '[:lower:]')
+  dns_needs_creation_api=$(printf '┃%-53s┃' "     a) ${SUBDOMAIN_API}.${main_domain_to_create_subdomains_under}")
+  dns_needs_creation_ui=$(printf '┃%-53s┃' "     b) ${SUBDOMAIN_UI}.${main_domain_to_create_subdomains_under}")
+  post_installation_instructions_ingress="${ingress_disabled_warning_block}"
+  ingress_configuration_line_item="${manual_ingress_configuration_line_item}"
+  read -d '' post_installation_instructions_ingress <<EOM
+${ingress_disabled_warning_block}
+${dns_needs_creation_api}
+${dns_needs_creation_ui}
+EOM
+}
+
 function create_ingress_or_skip() {
-  if [[ "${CREATE_INGRESSES}" == "${TRUE}" ]] || [[ "${CREATE_INGRESSES}" == "${FALSE}" ]]; then
+  if [[ "${CREATE_INGRESSES}" == "${TRUE}" ]]; then
     create_ingresses="${CREATE_INGRESSES}"
+    post_installation_instructions_ingress="${ingress_enabled_warning_block}"
+    ingress_annotations_default_value="${ingress_annotations_placeholders}"
+    return
+  fi
+  if [[ "${CREATE_INGRESSES}" == "${FALSE}" ]]; then
+    handle_disabled_ingress
+    # main_domain_to_create_subdomains_under=$(text_prompt "▶ Main domain (YOU will create ${SUBDOMAIN_UI}.* and ${SUBDOMAIN_API}.* under this domain; do not include https:// or trailing slashes/periods)" "${main_domain_to_create_subdomains_under}" | tr '[:upper:]' '[:lower:]')
+    # post_installation_instructions_ingress="${ingress_disabled_warning_block}"
     return
   fi
 
-  echo >&2 "Do you want to create Ingresses using K8s and include in the Helm Chart?  (if no, you will have to do so manually!)"
+  echo >&2 "▶ Do you want to create Ingresses using K8s and include in the Helm Chart?  (if no, you will have to do so manually!)"
   options=(${YES} ${NO})
   select_option "${options[@]}"
   choice=$?
   if [[ "${options[$choice]}" == "${NO}" ]]; then
+    handle_disabled_ingress
+    # main_domain_to_create_subdomains_under=$(text_prompt "▶ Main domain (YOU will create ${SUBDOMAIN_UI}.* and ${SUBDOMAIN_API}.* under this domain; do not include https:// or trailing slashes/periods)" "${main_domain_to_create_subdomains_under}" | tr '[:upper:]' '[:lower:]')
+    # post_installation_instructions_ingress="${ingress_disabled_warning_block}"
     return
   fi
 
-  cat <<EOF
-Add your required ingress annotations under the following sections in ${BASH_SOURCE%/*}/values.yaml (some suggestions provided; installation will fail without provided annotations):
----
-backend:
-  ingress:
-    annotations:
-      ...
-ui:
-  ingress:
-    annotations:
-      ...
-
-EOF
   create_ingresses="${TRUE}"
-  main_domain_to_create_subdomains_under=$(text_prompt "Main domain (we will create sourcefield.* and sourcefield-api.* under this domain; do not include https:// or trailing slashes/periods)" "${main_domain_to_create_subdomains_under}" | tr '[:upper:]' '[:lower:]')
+  main_domain_to_create_subdomains_under=$(text_prompt "▶ Main domain (we will create ${SUBDOMAIN_UI}.* and ${SUBDOMAIN_API}.* under this domain; do not include https:// or trailing slashes/periods)" "${main_domain_to_create_subdomains_under}" | tr '[:upper:]' '[:lower:]')
+  post_installation_instructions_ingress="${ingress_enabled_warning_block}"
+  ingress_annotations_default_value="${ingress_annotations_placeholders}"
+}
+
+function get_value_from_helm_chart_by_json_path_or_default() {
+  local values_path=${1} default_value=${2}
+  if [[ "${default_value}" != "" ]]; then
+    echo "${default_value}"
+    return
+  fi
+  value=$(helm get values -n "${installation_kubernetes_namespace}" "${installation_name}" -o json 2> /dev/null | jq -r "${values_path}")
+  echo "${value}"
 }
 
 function get_or_create_base64_secret_value_from_helm_chart() {
   local values_path=${1} num_bytes=${2}
-  value=$(helm get values -n "${installation_kubernetes_namespace}" "${installation_name}" -o json 2> /dev/null | jq -r "${1}")
+  value=$(get_value_from_helm_chart_by_json_path_or_default "${values_path}")
   if [ "${value}" != "null" ]; then
     echo "${value}"
     case "$values_path" in
@@ -206,27 +278,44 @@ function get_or_create_base64_secret_value_from_helm_chart() {
   echo "$(openssl rand ${num_bytes} | base64)"
 }
 
+function get_value_or_curl_with_jq_query_for_value() {
+  local default_value=${1} url=${2} jq_query=${3}
+  if [[ "${default_value}" != "" ]]; then
+    echo "${default_value}"
+    return
+  fi
+
+  value=$(curl -s ${url} | jq -r  "${jq_query}")
+  echo "${value}"
+}
+
 cat <<EOF
-▛▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▜
-▌  Welcome to SourceField  -  "move fast & DON'T break things"           ▐
-▌========================================================================▐
-▌  This script will generate the files you need to install SourceField:  ▐
-▌    * values.yaml file                                                  ▐
-▌    * install.sh file                                                   ▐
-▙▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▟
+╔════════════════════════════════════════════════════════════════════════╗
+║  Welcome to SourceField  -  "move fast & DON'T break things"           ║
+╟────────────────────────────────────────────────────────────────────────╢
+║  This script will generate the files you need to install SourceField:  ║
+║    * values.yaml file                                                  ║
+║    * install.sh file                                                   ║
+╚════════════════════════════════════════════════════════════════════════╝
 
 EOF
 
-files_output_path=$(text_prompt_simple_value_with_default "Destination directory to output the above files" "${FILES_OUTPUT_DIRECTORY}" "${BASH_SOURCE%/*}")
-installation_kubernetes_namespace=$(text_prompt_simple_value_with_default "Kubernetes (K8s) namespace for current/previously-installed installation" "${INSTALLATION_KUBERNETES_NAMESPACE}" "${DEFAULT_NAMESPACE}")
-installation_name=$(text_prompt_simple_value_with_default "Helm Chart's installed name be" "${INSTALLATION_NAME}" "${DEFAULT_INSTALLATION_NAME}")
-sourcefield_license_key=$(text_prompt "Enter your SourceField License Key" "${SOURCEFIELD_LICENSE_KEY}")
-echo
+files_output_path=$(text_prompt_simple_value_with_default "▶ Destination directory to output the above files" "${FILES_OUTPUT_DIRECTORY}" "${BASH_SOURCE%/*}")
+installation_kubernetes_namespace=$(text_prompt_simple_value_with_default "▶ Kubernetes (K8s) namespace for current/previously-installed installation" "${INSTALLATION_KUBERNETES_NAMESPACE}" "${DEFAULT_NAMESPACE}")
+installation_name=$(text_prompt_simple_value_with_default "▶ Helm Chart's installed name be" "${INSTALLATION_NAME}" "${DEFAULT_INSTALLATION_NAME}")
+# sourcefield_license_key=$(text_prompt "▶ Enter your SourceField License Key" "${SOURCEFIELD_LICENSE_KEY}" "^\s*$" "${YES}" "${YES}")
+temp_license_key=$(get_value_from_helm_chart_by_json_path_or_default ".global.env.SOURCEFIELD_LICENSE_KEY" ${SOURCEFIELD_LICENSE_KEY})
+sourcefield_license_key=$(text_prompt "▶ Enter your SourceField License Key" ${temp_license_key} "^\s*$" "${YES}" "${YES}")
 get_github_details
 create_ingress_or_skip
 
+reset
+echo "☑ Capture necessary values"
+
 django_secret_key=$(get_or_create_base64_secret_value_from_helm_chart '.sourcefield.backend.env.DJANGO_SECRET_KEY' 50)
 field_encryption_key=$(get_or_create_base64_secret_value_from_helm_chart '.sourcefield.backend.env.FIELD_ENCRYPTION_KEY' 32)
+
+chart_version=$(get_value_or_curl_with_jq_query_for_value "${CHART_VERSION}" "https://harbor.sourcefield.io/api/chartrepo/sourcefield-public/charts/sourcefield" "[.[] | .version | select(contains(\"-\") | not)] | sort | reverse | first")
 
 # Output values.yaml file
 cat <<EOF > ${files_output_path}/values.yaml
@@ -236,26 +325,23 @@ global:
     GITHUB_API_BASE_URL: ${github_api_url}
 
   backend:
-    hostName: sourcefield-api.${main_domain_to_create_subdomains_under}
+    hostName: ${SUBDOMAIN_API}.${main_domain_to_create_subdomains_under}
   ui:
-    hostName: sourcefield.${main_domain_to_create_subdomains_under}
+    hostName: ${SUBDOMAIN_UI}.${main_domain_to_create_subdomains_under}
 
 backend:
   ingress:
     enabled: ${create_ingresses}
-    annotations:
-      # kubernetes.io/ingress.class: nginx
-      # cert-manager.io/cluster-issuer: letsencrypt-prod
-      # kubernetes.io/tls-acme: "true"
+    annotations: ${ingress_annotations_default_value}
     hosts:
-      - host: sourcefield-api.${main_domain_to_create_subdomains_under} # If enabled, it must match global.backend.hostName
+      - host: ${SUBDOMAIN_API}.${main_domain_to_create_subdomains_under} # If enabled, it must match global.backend.hostName
         paths:
           - path: /
             pathType: ImplementationSpecific
     tls:
-    - secretName: sourcefield-api-dev
+    - secretName: ${SUBDOMAIN_API}-dev
       hosts:
-        - sourcefield-api.${main_domain_to_create_subdomains_under}
+        - ${SUBDOMAIN_API}.${main_domain_to_create_subdomains_under}
   env:
     GITHUB_BASE_URL: ${github_url}
     # !!!!!!!!!!!!!! IMPORTANT !!!!!!!!!!!!!!
@@ -267,19 +353,59 @@ backend:
 ui:
   ingress:
     enabled: ${create_ingresses}
-    annotations:
-      # kubernetes.io/ingress.class: nginx
-      # cert-manager.io/cluster-issuer: letsencrypt-prod
-      # kubernetes.io/tls-acme: "true"
+    annotations: ${ingress_annotations_default_value}
     hosts:
-      - host: sourcefield.${main_domain_to_create_subdomains_under} # If enabled, it must match global.ui.hostName
+      - host: ${SUBDOMAIN_UI}.${main_domain_to_create_subdomains_under} # If enabled, it must match global.ui.hostName
         paths:
           - path: /
             pathType: ImplementationSpecific
     tls:
     - secretName: sourcefield-dev
       hosts:
-        - sourcefield.${main_domain_to_create_subdomains_under}
+        - ${SUBDOMAIN_UI}.${main_domain_to_create_subdomains_under}
 EOF
+echo "☑ Generated ${files_output_path}/values.yaml"
+sleep 0.5
 
 # Output install.sh
+cat <<EOF > ${files_output_path}/install.sh
+#!/usr/bin/env bash
+INSTALLED_CHART_NAME="${installation_name}"
+INSTALLATION_NAMESPACE="${installation_kubernetes_namespace}"
+CHART_REPO_NAME="${HELM_REPO_ADD_LOCAL_NAME}"
+CHART_REPO_URL="${HELM_REPO_URL}"
+CHART_NAME="${HELM_CHART_NAME}"
+CHART_VERSION="${chart_version}"
+
+helm repo add "\${CHART_REPO_NAME}" "\${CHART_REPO_URL}" || true
+helm repo update "\${CHART_REPO_NAME}"
+
+helm upgrade --install \\
+  "\${INSTALLED_CHART_NAME}" \\
+  "\${CHART_REPO_NAME}/\${CHART_NAME}" \\
+  -n "\${INSTALLATION_NAMESPACE}" \\
+  --create-namespace \\
+  --version "\${CHART_VERSION}" \\
+  -f "./values.yaml"
+EOF
+echo "☑ Generated ${files_output_path}/install.sh"
+sleep 0.4
+
+cat <<EOF
+☐ Manual edits to ${files_output_path}/values.yaml
+☐ Installation/Upgrade of the Helm Chart:
+  ☐ Running ${files_output_path}/install.sh, OR
+  ☐ Other installation method (Argo CD, etc.)
+${ingress_configuration_line_item}
+
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃    ⚑⚑⚑⚑⚑⚑⚑⚑  ⚞ EXTREMELY IMPORTANT!! ⚟  ⚑⚑⚑⚑⚑⚑⚑⚑    ┃
+┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫
+┃  You must complete the following steps:             ┃
+┃─────────────────────────────────────────────────────┃
+${post_installation_instructions_environment_variables}
+┃┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┃
+${post_installation_instructions_ingress}
+┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+
+EOF
