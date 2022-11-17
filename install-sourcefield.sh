@@ -17,14 +17,20 @@ NO="no"
 TRUE="true"
 FALSE="false"
 URL_REGEX='^(https://).*$'
-set +H
+FETCHED="fetched"
+GENERATED="generated"
 
 NON_URL_REGEX='^(?!https://).*$'
+
+DEFAULT_INSTALLATION_NAME="sourcefield"
+DEFAULT_NAMESPACE="sourcefield"
 
 github_url="https://github.com"
 github_api_url="https://api.github.com"
 create_ingresses="${FALSE}"
 main_domain_to_create_subdomains_under=""
+django_secret_key_fetched_or_generated="${GENERATED}"
+field_encryption_key_fetched_or_generated="${GENERATED}"
 
 # Renders a text based list of options that can be selected by the
 # user using up, down and enter keys and returns the chosen option.
@@ -96,18 +102,16 @@ function text_prompt() {
     echo "${possible_value}"
     return
   fi
-  echo >&2 "${prompt}"
-  read value
+  # echo >&2 "${prompt}"
+  read -p "${prompt}:  "
 
   if [[ "${regex_match}" == "" ]]; then
     echo "${value}"
-    echo >&2
     return
   fi
 
   if [[ "$value" =~ $regex_match ]]; then
     echo "${value}"
-    echo >&2
     return
   fi
   echo >&2
@@ -119,20 +123,17 @@ function text_prompt_simple_value_with_default() {
   local prompt=${1} possible_value=${2} default_value=${3}
   if [[ "${2}" != "" ]]; then
     echo "${possible_value}"
-    echo >&2
     return
   fi
-  echo >&2 "${prompt}  (default: ${default_value})"
-  read value
+  # echo >&2 "${prompt}  (default: ${default_value})"
+  read -p "${prompt}  (default: ${default_value}):  "
 
   if [[ "${value}" != "" ]]; then
     echo "${value}"
-    echo >&2
     return
   fi
 
   echo "${default_value}"
-  echo >&2
 }
 
 function get_github_details() {
@@ -150,8 +151,8 @@ function get_github_details() {
     return
   fi
 
-  github_url=$(text_prompt "GitHub URL:" "${GITHUB_URL}" "${URL_REGEX}" | tr '[:upper:]' '[:lower:]')
-  github_api_url=$(text_prompt "GitHub API URL:" "${GITHUB_API_URL}" "${URL_REGEX}" | tr '[:upper:]' '[:lower:]')
+  github_url=$(text_prompt "GitHub URL" "${GITHUB_URL}" "${URL_REGEX}" | tr '[:upper:]' '[:lower:]')
+  github_api_url=$(text_prompt "GitHub API URL" "${GITHUB_API_URL}" "${URL_REGEX}" | tr '[:upper:]' '[:lower:]')
 }
 
 function create_ingress_or_skip() {
@@ -182,7 +183,7 @@ ui:
 
 EOF
   create_ingresses="${TRUE}"
-  main_domain_to_create_subdomains_under=$(text_prompt "Main domain (we will create sourcefield.* and sourcefield-api.* under this domain; do not include https:// or trailing slashes/periods):" "${main_domain_to_create_subdomains_under}" | tr '[:upper:]' '[:lower:]')
+  main_domain_to_create_subdomains_under=$(text_prompt "Main domain (we will create sourcefield.* and sourcefield-api.* under this domain; do not include https:// or trailing slashes/periods)" "${main_domain_to_create_subdomains_under}" | tr '[:upper:]' '[:lower:]')
 }
 
 function get_or_create_base64_secret_value_from_helm_chart() {
@@ -190,6 +191,16 @@ function get_or_create_base64_secret_value_from_helm_chart() {
   value=$(helm get values -n "${installation_kubernetes_namespace}" "${installation_name}" -o json 2> /dev/null | jq -r "${1}")
   if [ "${value}" != "null" ]; then
     echo "${value}"
+    case "$values_path" in
+      '.sourcefield.backend.env.DJANGO_SECRET_KEY')
+        django_secret_key_fetched_or_generated="${FETCHED}"
+        ;;
+      '.sourcefield.backend.env.FIELD_ENCRYPTION_KEY')
+        field_encryption_key_fetched_or_generated="${FETCHED}"
+        ;;
+      *)
+        ;;
+    esac
     return
   fi
   echo "$(openssl rand ${num_bytes} | base64)"
@@ -206,27 +217,19 @@ cat <<EOF
 
 EOF
 
-files_output_path=$(text_prompt_simple_value_with_default "Where do you want to output the above files?" "${FILES_OUTPUT_DIRECTORY}" "${BASH_SOURCE%/*}")
-installation_kubernetes_namespace=$(text_prompt "Which Kubernetes (K8s) namespace will you install this into:" "${INSTALLATION_KUBERNETES_NAMESPACE}")
-installation_name=$(text_prompt "Which Kubernetes (K8s) namespace will you install this into:" "${INSTALLATION_NAME}")
-sourcefield_license_key=$(text_prompt "Enter your SourceField License Key:" "${SOURCEFIELD_LICENSE_KEY}")
+files_output_path=$(text_prompt_simple_value_with_default "Destination directory to output the above files" "${FILES_OUTPUT_DIRECTORY}" "${BASH_SOURCE%/*}")
+installation_kubernetes_namespace=$(text_prompt_simple_value_with_default "Kubernetes (K8s) namespace for current/previously-installed installation" "${INSTALLATION_KUBERNETES_NAMESPACE}" "${DEFAULT_NAMESPACE}")
+installation_name=$(text_prompt_simple_value_with_default "Helm Chart's installed name be" "${INSTALLATION_NAME}" "${DEFAULT_INSTALLATION_NAME}")
+sourcefield_license_key=$(text_prompt "Enter your SourceField License Key" "${SOURCEFIELD_LICENSE_KEY}")
+echo
 get_github_details
 create_ingress_or_skip
 
 django_secret_key=$(get_or_create_base64_secret_value_from_helm_chart '.sourcefield.backend.env.DJANGO_SECRET_KEY' 50)
 field_encryption_key=$(get_or_create_base64_secret_value_from_helm_chart '.sourcefield.backend.env.FIELD_ENCRYPTION_KEY' 32)
 
-# echo "${sourcefield_license_key}"
-# echo "${github_url}"
-# echo "${github_api_url}"
-# echo "${main_domain_to_create_subdomains_under}"
-
-# echo "${django_secret_key}"
-# echo "${field_encryption_key}"
-
-
-# OUTPUT TO THE FOLLOWING ==> ${BASH_SOURCE%/*}/values.yaml
-cat <<EOF > /Users/ericmeadows/Downloads/tmp-values.yaml
+# Output values.yaml file
+cat <<EOF > ${files_output_path}/values.yaml
 global:
   env:
     SOURCEFIELD_LICENSE_KEY: ${sourcefield_license_key}
@@ -254,9 +257,12 @@ backend:
       hosts:
         - sourcefield-api.${main_domain_to_create_subdomains_under}
   env:
-    DJANGO_SECRET_KEY: ${django_secret_key}
-    FIELD_ENCRYPTION_KEY: ${field_encryption_key}
     GITHUB_BASE_URL: ${github_url}
+    # !!!!!!!!!!!!!! IMPORTANT !!!!!!!!!!!!!!
+    # The following 2 values MUST NOT change between installations.
+    # If using a CI/CD system, you should fetch these values instead of overriding them!
+    DJANGO_SECRET_KEY: # ${django_secret_key_fetched_or_generated}:  ${django_secret_key}
+    FIELD_ENCRYPTION_KEY: # ${field_encryption_key_fetched_or_generated}:  ${field_encryption_key}
 
 ui:
   ingress:
@@ -276,42 +282,4 @@ ui:
         - sourcefield.${main_domain_to_create_subdomains_under}
 EOF
 
-# # url="https://www.google.com"
-# url="www.google.com"
-# if [[ "$url" =~ '^(?!https)' ]]; then
-#     echo "Valid url"
-# else
-#     echo "Invalid url"
-# fi
-# echo $("$url" =~ "^(?!https)")
-
-
-# echo "Are you using GitHub Cloud (github.com) or GitHub Enterprise (custom domain):"
-# options=(${YES} ${NO})
-# select_option "${options[@]}"
-# choice=$?
-# echo "$choice"
-
-# # If GitHub Enterprise, prompt
-
-# echo "Are you using GitHub Cloud (github.com) or GitHub Enterprise (custom domain):"
-# options=(${YES} ${NO})
-# select_option "${options[@]}"
-# choice=$?
-# echo "$choice"
-
-# echo "Select one option using up/down keys and enter to confirm:"
-# options=("one" "two" "three")
-# select_option "${options[@]}"
-# choice=$?
-# # echo "Choosen index = $choice"
-# # echo "        value = ${options[$choice]}"
-
-
-# echo "Enter the user name: "
-# read first_name
-# # echo "The Current User Name is $first_name"
-# # echo
-# # echo "Enter other users'names: "
-# # read name1 name2 name3
-# # echo "$name1, $name2, $name3 are the other users."
+# Output install.sh
