@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+
+# The following can be passed in as environment variables, skipping prompts:
+#
 # FILES_OUTPUT_DIRECTORY=""
 # INSTALLATION_KUBERNETES_NAMESPACE=""
 # INSTALLATION_NAME=""
@@ -319,7 +322,6 @@ EOF
 files_output_path=$(text_prompt_simple_value_with_default "▶ Destination directory to output the above files" "${FILES_OUTPUT_DIRECTORY}" "${BASH_SOURCE%/*}")
 installation_kubernetes_namespace=$(text_prompt_simple_value_with_default "▶ Kubernetes (K8s) namespace for current/previously-installed installation" "${INSTALLATION_KUBERNETES_NAMESPACE}" "${DEFAULT_NAMESPACE}")
 installation_name=$(text_prompt_simple_value_with_default "▶ Helm Chart's installed name be" "${INSTALLATION_NAME}" "${DEFAULT_INSTALLATION_NAME}")
-# sourcefield_license_key=$(text_prompt "▶ Enter your SourceField License Key" "${SOURCEFIELD_LICENSE_KEY}" "^\s*$" "${YES}" "${YES}")
 temp_license_key=$(get_value_from_helm_chart_by_json_path_or_default ".global.env.SOURCEFIELD_LICENSE_KEY" ${SOURCEFIELD_LICENSE_KEY})
 sourcefield_license_key=$(text_prompt "▶ Enter your SourceField License Key" ${temp_license_key} "^\s*$" "${YES}" "${YES}")
 get_github_details
