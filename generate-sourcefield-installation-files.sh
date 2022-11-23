@@ -314,7 +314,7 @@ cat <<EOF
 ╟────────────────────────────────────────────────────────────────────────╢
 ║  This script will generate the files you need to install SourceField:  ║
 ║    * values.yaml file                                                  ║
-║    * install.sh file                                                   ║
+║    * install-sourcefield.sh file                                       ║
 ╚════════════════════════════════════════════════════════════════════════╝
 
 EOF
@@ -394,8 +394,8 @@ EOF
 echo "☑ Generated ${files_output_path}/values.yaml"
 sleep 0.5
 
-# Output install.sh
-cat <<EOF > ${files_output_path}/install.sh
+# Output install-sourcefield.sh
+cat <<EOF > ${files_output_path}/install-sourcefield.sh
 #!/usr/bin/env bash
 INSTALLED_CHART_NAME="${installation_name}"
 INSTALLATION_NAMESPACE="${installation_kubernetes_namespace}"
@@ -415,13 +415,13 @@ helm upgrade --install \\
   --version "\${CHART_VERSION}" \\
   -f "./values.yaml"
 EOF
-echo "☑ Generated ${files_output_path}/install.sh"
+echo "☑ Generated ${files_output_path}/install-sourcefield.sh"
 sleep 0.4
 
 cat <<EOF
 ☐ Manual edits to ${files_output_path}/values.yaml
 ☐ Installation/Upgrade of the Helm Chart:
-  ☐ Running ${files_output_path}/install.sh, OR
+  ☐ Running ${files_output_path}/install-sourcefield.sh, OR
   ☐ Other installation method (Argo CD, etc.)
 ${ingress_configuration_line_item}
 
@@ -436,4 +436,4 @@ ${post_installation_instructions_ingress}
 ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
 
 EOF
-chmod +x ${files_output_path}/install.sh
+chmod +x ${files_output_path}/install-sourcefield.sh
