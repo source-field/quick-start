@@ -436,3 +436,4 @@ ${post_installation_instructions_ingress}
 ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
 
 EOF
+chmod +x ${files_output_path}/install.sh
