@@ -9,5 +9,5 @@ How to get up and running with SourceField - quickly &amp; easily.
 ./generate-sourcefield-installation-files.sh
 
 # 2. Run the install script
-./install.sh
+./install-sourcefield.sh
 ```
